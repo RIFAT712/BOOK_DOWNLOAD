@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlipHTML5 Downloader</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: #fff;
+            padding: 2rem 3rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
+            width: 90%;
+            max-width: 500px;
+            text-align: center;
+        }
+        h1 {
+            color: #1a252f;
+            margin-bottom: 1.5rem;
+        }
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 1rem;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+            width: 100%;
+        }
+        .btn-primary:hover {
+            background-color: #0056b3;
+        }
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+        .btn-danger {
+            background-color: #dc3545;
+            color: white;
+        }
+        #progress-area {
+            display: none; /* Hidden by default */
+            margin-top: 2rem;
+        }
+        .progress-bar {
+            width: 100%;
+            background-color: #e9ecef;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+        .progress-bar-inner {
+            height: 20px;
+            width: 0%;
+            background-color: #28a745;
+            transition: width 0.4s ease;
+            text-align: center;
+            color: white;
+            line-height: 20px;
+        }
+        #status-text {
+            font-weight: bold;
+            margin-bottom: 1rem;
+        }
+        #download-link a {
+            display: inline-block;
+            margin-top: 1rem;
+            font-size: 1.2rem;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Book Downloader</h1>
+    <div id="start-form">
+        <div class="form-group">
+            <input type="text" id="book-name" name="book_name" placeholder="Enter Book ID (e.g., lzrut/orxa )" required>
+        </div>
+        <button class="btn btn-primary" onclick="startDownload()">Start Download</button>
+    </div>
+
+    <div id="progress-area">
+        <p id="status-text">Starting...</p>
+        <div class="progress-bar">
+            <div id="progress-bar-inner" class="progress-bar-inner">0%</div>
+        </div>
+        <div id="download-link"></div>
+        <div id="controls">
+             <button class="btn btn-secondary" id="pause-resume-btn" onclick="togglePause()">Pause</button>
+             <button class="btn btn-danger" onclick="cancelJob()">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let jobId = null;
+    let progressInterval = null;
+    let isPaused = false;
+
+    const startForm = document.getElementById('start-form');
+    const progressArea = document.getElementById('progress-area');
+    const statusText = document.getElementById('status-text');
+    const progressBarInner = document.getElementById('progress-bar-inner');
+    const downloadLinkDiv = document.getElementById('download-link');
+    const controlsDiv = document.getElementById('controls');
+    const pauseResumeBtn = document.getElementById('pause-resume-btn');
+
+    async function startDownload() {
+        const bookName = document.getElementById('book-name').value;
+        if (!bookName) {
+            alert('Please enter a Book ID.');
+            return;
+        }
+
+        // Reset UI from previous run
+        startForm.style.display = 'none';
+        progressArea.style.display = 'block';
+        controlsDiv.style.display = 'block';
+        downloadLinkDiv.innerHTML = '';
+        statusText.textContent = 'Starting job...';
+        progressBarInner.style.width = '0%';
+        progressBarInner.textContent = '0%';
+        pauseResumeBtn.textContent = 'Pause';
+        isPaused = false;
+
+        const formData = new FormData();
+        formData.append('book_name', bookName);
+
+        const response = await fetch('/start', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+        if (data.status === 'started') {
+            jobId = data.job_id;
+            progressInterval = setInterval(pollProgress, 2000); // Check progress every 2 seconds
+        } else {
+            statusText.textContent = `Error: ${data.message}`;
+            startForm.style.display = 'block';
+            progressArea.style.display = 'none';
+        }
+    }
+
+    async function pollProgress() {
+        if (!jobId) return;
+
+        const response = await fetch(`/progress?job_id=${jobId}`);
+        if (response.status === 404) {
+             statusText.textContent = 'Job not found. It might have expired or been cancelled.';
+             clearInterval(progressInterval);
+             return;
+        }
+        
+        const data = await response.json();
+        const { status, done, total } = data;
+
+        let percentage = total > 0 ? Math.round((done / total) * 100) : 0;
+        progressBarInner.style.width = `${percentage}%`;
+        progressBarInner.textContent = `${percentage}%`;
+
+        switch (status) {
+            case 'downloading':
+                statusText.textContent = `Downloading... (${done} / ${total})`;
+                break;
+            case 'preparing_pdf':
+                statusText.textContent = 'Compressing images and creating PDF...';
+                break;
+            case 'paused':
+                statusText.textContent = `Paused (${done} / ${total})`;
+                break;
+            case 'done':
+                // This is the crucial part!
+                statusText.textContent = '✅ Download Ready!';
+                clearInterval(progressInterval); // Stop polling
+                const downloadUrl = `/download?job_id=${jobId}`;
+                downloadLinkDiv.innerHTML = `<a href="${downloadUrl}" class="btn btn-primary">Download PDF</a>`;
+                controlsDiv.style.display = 'none'; // Hide pause/cancel buttons
+                break;
+            case 'failed':
+                statusText.textContent = '❌ Job failed. Please check the book ID and try again.';
+                clearInterval(progressInterval);
+                controlsDiv.style.display = 'none';
+                break;
+        }
+    }
+    
+    async function togglePause() {
+        const action = isPaused ? 'resume' : 'pause';
+        const formData = new FormData();
+        formData.append('job_id', jobId);
+        formData.append('action', action);
+
+        await fetch('/pause', { method: 'POST', body: formData });
+        
+        isPaused = !isPaused;
+        pauseResumeBtn.textContent = isPaused ? 'Resume' : 'Pause';
+    }
+
+    async function cancelJob() {
+        clearInterval(progressInterval);
+        const formData = new FormData();
+        formData.append('job_id', jobId);
+        await fetch('/cancel', { method: 'POST', body: formData });
+        statusText.textContent = 'Job cancelled.';
+        progressArea.style.display = 'none';
+        startForm.style.display = 'block';
+    }
+
+</script>
+</body>
+</html>
