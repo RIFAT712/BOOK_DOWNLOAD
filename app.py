@@ -127,7 +127,7 @@ async def process_book(book_name, job_id):
                 img = img.resize((int(img.width * 0.6), int(img.height * 0.6)), Image.Resampling.LANCZOS)
                 
                 compressed_buffer = io.BytesIO()
-                img.save(compressed_buffer, "JPEG", quality=30)
+                img.save(compressed_buffer, "JPEG", quality=15)
                 compressed_image_bytes_list.append(compressed_buffer.getvalue())
 
             # Convert the list of image bytes directly to a PDF in memory

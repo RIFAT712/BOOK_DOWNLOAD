@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FlipHTML5 Downloader</title>
+<style>
+    body { 
+        display: flex; justify-content: center; align-items: center; 
+        height: 100vh; margin: 0; font-family: Arial, sans-serif; 
+        background-color: #f0f0f0; 
+    }
+    .card {
+        background-color: #fff;
+        padding: 30px 40px;
+        border-radius: 10px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        max-width: 400px;
+        width: 100%;
+        text-align: center;
+    }
+    input, button {
+        padding: 10px;
+        margin: 10px 0;
+        width: 100%;
+        box-sizing: border-box;
+    }
+    #progress-container { margin-top: 20px; display: none; }
+    #progress-bar {
+        width: 100%;
+        background-color: #eee;
+        border-radius: 4px;
+        overflow: hidden;
+        position: relative;
+        height: 25px;
+    }
+    #progress-bar-inner {
+        width: 0%;
+        height: 100%;
+        background-color: #4caf50;
+        transition: width 0.3s ease;
+    }
+    #progress-bar-inner-percent {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-weight: bold;
+        color: black;
+    }
+    #status-text, #eta-text {
+        margin-top: 10px;
+        font-weight: bold;
+    }
+    #download-btn {
+        display: none; 
+        margin-top: 10px; 
+        padding: 10px 20px; 
+        background-color: #4caf50;
+        color: white; 
+        text-decoration: none; 
+        border-radius: 5px;
+        border: none;
+        cursor: pointer;
+    }
+</style>
+</head>
+<body>
+<div class="card">
+    <h2>FlipHTML5 Downloader</h2>
+    <p>Enter the Book ID from the URL (e.g., 'zoyto' from 'fliphtml5.com/zoyto/abcd').</p>
+    <input type="text" id="book_name" placeholder="Enter book ID">
+    <button id="start-btn">Start Download</button>
+    <button id="pause-btn" style="display:none;">Pause</button>
+    <button id="cancel-btn" style="display:none;">Cancel</button>
+
+    <div id="progress-container">
+        <div id="progress-bar">
+            <div id="progress-bar-inner"></div>
+            <span id="progress-bar-inner-percent">0%</span>
+        </div>
+        <p id="status-text">Status: idle</p>
+        <p id="eta-text"></p>
+        <a id="download-btn" href="#" download>Download PDF</a>
+    </div>
+</div>
+
+<script>
+const startBtn = document.getElementById('start-btn');
+const pauseBtn = document.getElementById('pause-btn');
+const cancelBtn = document.getElementById('cancel-btn');
+const bookInput = document.getElementById('book_name');
+const progressContainer = document.getElementById('progress-container');
+const progressBarInner = document.getElementById('progress-bar-inner');
+const progressBarInnerPercent = document.getElementById('progress-bar-inner-percent');
+const statusText = document.getElementById('status-text');
+const etaText = document.getElementById('eta-text');
+const downloadBtn = document.getElementById('download-btn');
+
+// --- KEY CHANGE: Store the job ID for the current operation ---
+let currentJobId = null;
+let progressInterval = null;
+
+// Function to reset the UI to its initial state
+function resetUI() {
+    if (progressInterval) clearInterval(progressInterval);
+    
+    currentJobId = null;
+    startBtn.disabled = false;
+    startBtn.style.display = 'inline-block';
+    bookInput.disabled = false;
+    bookInput.style.display = 'inline-block';
+    
+    progressContainer.style.display = 'none';
+    pauseBtn.style.display = 'none';
+    cancelBtn.style.display = 'none';
+    downloadBtn.style.display = 'none';
+    statusText.textContent = 'Status: idle';
+    etaText.textContent = '';
+    progressBarInner.style.width = '0%';
+    progressBarInnerPercent.textContent = '0%';
+}
+
+startBtn.addEventListener('click', () => {
+    const bookName = bookInput.value.trim();
+    if (!bookName) return alert("Please enter a book ID.");
+
+    startBtn.disabled = true;
+    bookInput.disabled = true;
+
+    fetch('/start', {
+        method: 'POST',
+        body: new URLSearchParams({ book_name: bookName })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'started' && data.job_id) {
+            // --- KEY CHANGE: Save the received job ID ---
+            currentJobId = data.job_id;
+
+            progressContainer.style.display = 'block';
+            pauseBtn.style.display = 'inline-block';
+            cancelBtn.style.display = 'inline-block';
+            pauseBtn.textContent = 'Pause';
+            
+            // Start polling for progress
+            progressInterval = setInterval(checkProgress, 1000);
+        } else {
+            alert(data.message || 'Could not start download.');
+            resetUI();
+        }
+    }).catch(err => {
+        alert('An error occurred.');
+        resetUI();
+    });
+});
+
+pauseBtn.addEventListener('click', () => {
+    if (!currentJobId) return;
+    const action = pauseBtn.textContent === 'Pause' ? 'pause' : 'resume';
+    
+    // --- KEY CHANGE: Send the job ID with the request ---
+    fetch('/pause', {
+        method: 'POST',
+        body: new URLSearchParams({ action: action, job_id: currentJobId })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'paused') {
+            pauseBtn.textContent = 'Resume';
+        } else {
+            pauseBtn.textContent = 'Pause';
+        }
+    });
+});
+
+cancelBtn.addEventListener('click', () => {
+    if (!currentJobId) return;
+    
+    fetch('/cancel', {
+        method: 'POST',
+        body: new URLSearchParams({ job_id: currentJobId })
+    }).then(() => {
+        alert('Download cancelled.');
+        resetUI();
+    });
+});
+
+function checkProgress() {
+    // --- KEY CHANGE: Send the job ID to get progress for the correct job ---
+    if (!currentJobId) return;
+    fetch(`/progress?job_id=${currentJobId}`)
+    .then(res => {
+        if (res.status === 404) {
+            throw new Error('Job not found. It might have been cancelled or expired.');
+        }
+        return res.json();
+    })
+    .then(data => {
+        let percent = 0;
+        if (data.total > 0) {
+            percent = Math.floor((data.done / data.total) * 100);
+        }
+        progressBarInner.style.width = percent + '%';
+        progressBarInnerPercent.textContent = percent + '%';
+
+        statusText.textContent = 'Status: ' + data.status;
+
+        if (data.start_time && data.done > 0 && data.status === 'downloading' && !data.paused) {
+            const elapsed = (Date.now() / 1000) - data.start_time;
+            const timePerPage = elapsed / data.done;
+            const remaining = Math.round((data.total - data.done) * timePerPage);
+            const mins = Math.floor(remaining / 60);
+            const secs = remaining % 60;
+            etaText.textContent = `ETA: ${mins}m ${secs}s`;
+        } else if (data.paused) {
+             etaText.textContent = `ETA: Paused`;
+        } else {
+            etaText.textContent = '';
+        }
+
+        if (data.status === 'done' && data.pdf_file) {
+            clearInterval(progressInterval);
+            // --- KEY CHANGE: Set the correct download link with the job ID ---
+            downloadBtn.href = `/download?job_id=${currentJobId}`;
+            downloadBtn.style.display = 'inline-block';
+            pauseBtn.style.display = 'none';
+            cancelBtn.style.display = 'none';
+            etaText.textContent = 'Your file is ready!';
+
+        } else if (data.status === 'failed') {
+            clearInterval(progressInterval);
+            alert('Download failed. Please check the book ID and try again.');
+            resetUI();
+        }
+    }).catch(error => {
+        clearInterval(progressInterval);
+        alert(error.message);
+        resetUI();
+    });
+}
+</script>
+</body>
+</html>
