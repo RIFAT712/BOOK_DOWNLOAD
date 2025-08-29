@@ -6,29 +6,23 @@ import img2pdf
 import threading
 import time
 import uuid
-import io  # <-- Import the 'io' module
+import io
 from PIL import Image
 from flask import Flask, render_template, request, send_file, jsonify
 
 app = Flask(__name__)
 
-# --- No more BASE_FOLDER or file system operations for jobs ---
-
 # --- Global State Management ---
-# Manages all concurrent jobs. Key: job_id, Value: dictionary of job state.
 JOBS = {}
-JOBS_LOCK = threading.Lock() # To safely access the JOBS dictionary
+JOBS_LOCK = threading.Lock()
 
 # --- Async functions ---
 async def fetch_json(session, url):
-    """Fetches and parses JSON from a URL."""
     async with session.get(url) as resp:
         text = await resp.text(encoding="utf-8")
-        # Handles the 'var xxx = {...};' format from fliphtml5
         return json.loads(text.split('= ')[1][:-1])
 
 async def find_page_url(session, book_name, page_info):
-    """Tries different URL patterns to find the correct image URL for a page."""
     page_num_str = page_info["n"][0]
     page_index = page_info["p"] + 1
     
@@ -48,7 +42,6 @@ async def find_page_url(session, book_name, page_info):
     return None
 
 async def download_page(session, book_name, page_info, job_id):
-    """Downloads a single page into an in-memory bytes buffer."""
     pause_event = JOBS.get(job_id, {}).get("pause_event")
     if not pause_event:
         return None
@@ -58,7 +51,6 @@ async def download_page(session, book_name, page_info, job_id):
         print(f"URL not found for page {page_info['p'] + 1}")
         return None
 
-    # --- MODIFICATION: Download image into memory ---
     image_bytes_buffer = io.BytesIO()
     try:
         async with session.get(url) as r:
@@ -73,7 +65,6 @@ async def download_page(session, book_name, page_info, job_id):
                 with JOBS_LOCK:
                     if job_id in JOBS:
                         JOBS[job_id]["done"] += 1
-                # Return the page index and the raw bytes of the image
                 return (page_info['p'], image_bytes_buffer.getvalue())
             else:
                 return None
@@ -82,7 +73,6 @@ async def download_page(session, book_name, page_info, job_id):
         return None
 
 async def process_book(book_name, job_id):
-    """Main async task to process and download an entire book in memory."""
     try:
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "downloading"
@@ -94,7 +84,8 @@ async def process_book(book_name, job_id):
             except Exception as e:
                 print(f"Failed to fetch or parse config.js: {e}")
                 with JOBS_LOCK:
-                    if job_id in JOBS: JOBS[job_id]["status"] = "failed"
+                    if job_id in JOBS:
+                        JOBS[job_id]["status"] = "failed"
                 return
 
             fliphtml5_pages = config_dict['fliphtml5_pages']
@@ -104,38 +95,34 @@ async def process_book(book_name, job_id):
             with JOBS_LOCK:
                 if job_id in JOBS: 
                     JOBS[job_id]["total"] = len(fliphtml5_pages)
-                    # Store book title for the final PDF filename
-                    JOBS[job_id]["book_title"] = re.sub(r'[<>:"/\\|?*]', '_', config_dict['meta']['title'])
+                    JOBS[job_id]["book_title"] = re.sub(
+                        r'[<>:"/\\|?*]', '_', config_dict['meta']['title']
+                    )
 
-            # --- MODIFICATION: Task calls download_page without folder_name ---
             tasks = [download_page(session, book_name, page_data, job_id) for page_data in fliphtml5_pages]
             downloaded_pages = await asyncio.gather(*tasks)
-            # Sort pages by index (the first element of our tuple)
             downloaded_pages = sorted([p for p in downloaded_pages if p], key=lambda x: x[0])
 
             with JOBS_LOCK:
-                if job_id not in JOBS: return
+                if job_id not in JOBS:
+                    return
                 if not downloaded_pages:
                     JOBS[job_id]["status"] = "failed"
                     return
                 JOBS[job_id]["status"] = "preparing_pdf"
 
-            # --- MODIFICATION: Compress images and generate PDF in memory ---
             compressed_image_bytes_list = []
-            for _, image_data in downloaded_pages: # Loop through sorted (index, bytes) tuples
+            for _, image_data in downloaded_pages:
                 img = Image.open(io.BytesIO(image_data))
                 img = img.resize((int(img.width * 0.6), int(img.height * 0.6)), Image.Resampling.LANCZOS)
-                
                 compressed_buffer = io.BytesIO()
                 img.save(compressed_buffer, "JPEG", quality=15)
                 compressed_image_bytes_list.append(compressed_buffer.getvalue())
 
-            # Convert the list of image bytes directly to a PDF in memory
             pdf_bytes = img2pdf.convert(compressed_image_bytes_list)
 
             with JOBS_LOCK:
                 if job_id in JOBS:
-                    # Store the final PDF data directly in the job dictionary
                     JOBS[job_id]["pdf_data"] = pdf_bytes
                     JOBS[job_id]["status"] = "done"
     except Exception as e:
@@ -145,8 +132,6 @@ async def process_book(book_name, job_id):
                 JOBS[job_id]["status"] = "failed"
 
 # --- Flask routes ---
-# --- MODIFICATION: safe_delete_folder is no longer needed ---
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -154,8 +139,8 @@ def index():
 @app.route("/start", methods=["POST"])
 def start():
     book_name = request.form.get("book_name")
-    if not book_name:
-        return jsonify({"status": "error", "message": "Book ID required"}), 400
+    if not book_name or not re.match(r"^[A-Za-z0-9]+$", book_name):
+        return jsonify({"status": "error", "message": "Invalid Book ID"}), 400
 
     job_id = str(uuid.uuid4())
     with JOBS_LOCK:
@@ -167,13 +152,12 @@ def start():
             "status": "starting",
             "total": 0,
             "done": 0,
-            "pdf_data": None, # --- MODIFICATION: Changed from pdf_file to pdf_data
-            "book_title": "book", # Default title
+            "pdf_data": None,
+            "book_title": "book",
             "paused": False,
             "started": True,
             "start_time": time.time(),
             "pause_event": pause_event,
-            # --- MODIFICATION: No folder_name needed ---
         }
 
     threading.Thread(target=lambda: asyncio.run(process_book(book_name, job_id))).start()
@@ -210,14 +194,11 @@ def get_progress():
         job_state = JOBS.get(job_id)
         if not job_state:
             return jsonify({"status": "not_found"}), 404
-        
-        # Create a copy, excluding non-serializable objects for the JSON response
         state_to_send = {k: v for k, v in job_state.items() if k not in ['pause_event', 'pdf_data']}
     return jsonify(state_to_send)
 
 @app.route("/download")
 def download():
-    """Downloads the final PDF from memory."""
     job_id = request.args.get("job_id")
     if not job_id:
         return "Job ID required", 400
@@ -228,25 +209,21 @@ def download():
         book_title = job.get("book_title", "download")
 
     if pdf_data:
-        # --- MODIFICATION: Serve the PDF from the in-memory bytes ---
         return send_file(
             io.BytesIO(pdf_data),
             as_attachment=True,
-            download_name=f'{book_title}.pdf', # Set the filename for the user
+            download_name=f'{book_title}.pdf',
             mimetype='application/pdf'
         )
     return "PDF not available or job not found.", 404
 
 @app.route("/cancel", methods=["POST"])
 def cancel():
-    """Cancels a job. No file cleanup needed anymore."""
     job_id = request.form.get("job_id")
     if not job_id:
         return jsonify({"status": "error", "message": "Job ID required"}), 400
 
     with JOBS_LOCK:
-        # Just remove the job from the dictionary. Python's garbage collector
-        # will handle the memory (image data, PDF data, etc.).
         job_to_cancel = JOBS.pop(job_id, None)
 
     if job_to_cancel:
@@ -254,5 +231,7 @@ def cancel():
     else:
         return jsonify({"status": "error", "message": "Job not found"}), 404
 
+# --- Entry point ---
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Production-safe: disable debug
+    app.run(host="0.0.0.0", port=8000, debug=False)
